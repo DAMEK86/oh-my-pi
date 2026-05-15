@@ -886,22 +886,34 @@ def _build_classify_issue(bindings: ToolBindings) -> HostTool[Any, Any]:
             )
         primary = args.get("primary")
         if primary not in _PRIMARY_TYPES:
-            _raise_command(f"classify_issue 'primary' must be one of {_PRIMARY_TYPES}; got {primary!r}.")
+            msg = f"classify_issue 'primary' must be one of {_PRIMARY_TYPES}; got {primary!r}."
+            _audit(bindings, "classify_issue", args, error=msg)
+            _raise_command(msg)
+        rationale = args.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            msg = "classify_issue requires a one-sentence 'rationale'."
+            _audit(bindings, "classify_issue", args, error=msg)
+            _raise_command(msg)
         priority = args.get("priority")
         if primary == "bug":
             if priority not in _PRIORITIES:
-                _raise_command(f"classify_issue requires 'priority' in {_PRIORITIES} when primary=='bug'.")
-        elif priority is not None and priority != "":
-            _raise_command("classify_issue 'priority' is only valid when primary=='bug'.")
-        rationale = args.get("rationale")
-        if not isinstance(rationale, str) or not rationale.strip():
-            _raise_command("classify_issue requires a one-sentence 'rationale'.")
+                msg = f"classify_issue requires 'priority' in {_PRIORITIES} when primary=='bug'."
+                _audit(bindings, "classify_issue", args, error=msg)
+                _raise_command(msg)
+        else:
+            # Non-bug primaries: silently drop any priority the model included
+            # rather than rejecting the call. Some models (notably gpt-5.5 over
+            # OpenAI Completions) treat every property as required and loop
+            # forever when a non-empty optional value triggers a hard error.
+            priority = None
         branch_slug = args.get("branch_slug")
-        if branch_slug is not None and branch_slug != "":
+        if isinstance(branch_slug, str) and branch_slug.strip():
             try:
                 branch_slug = validate_branch_slug(branch_slug)
             except ValueError as exc:
-                _raise_command(f"classify_issue rejected branch_slug: {exc}")
+                msg = f"classify_issue rejected branch_slug: {exc}"
+                _audit(bindings, "classify_issue", args, error=msg)
+                _raise_command(msg)
         else:
             branch_slug = None
 
@@ -909,18 +921,16 @@ def _build_classify_issue(bindings: ToolBindings) -> HostTool[Any, Any]:
         if primary == "bug" and isinstance(priority, str):
             labels.append(priority)
         for fn in args.get("functional") or ():
+            # Unknown functional tags are dropped silently — they aren't worth
+            # rejecting the whole classification over.
             if isinstance(fn, str) and fn in _FUNCTIONAL:
                 labels.append(fn)
         provider = args.get("provider")
-        if isinstance(provider, str) and provider.strip():
-            if not provider.startswith("provider:"):
-                _raise_command("classify_issue 'provider' must start with 'provider:' (e.g. provider:openai).")
+        if isinstance(provider, str) and provider.strip() and provider.startswith("provider:"):
             labels.append("providers")
             labels.append(provider)
         platform = args.get("platform")
-        if isinstance(platform, str) and platform.strip():
-            if platform not in _PLATFORMS:
-                _raise_command(f"classify_issue 'platform' must be one of {_PLATFORMS}.")
+        if isinstance(platform, str) and platform in _PLATFORMS:
             labels.append(platform)
         labels.append("triaged")
 

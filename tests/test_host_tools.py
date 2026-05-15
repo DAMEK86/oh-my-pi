@@ -383,17 +383,33 @@ def test_classify_issue_rejects_bug_without_priority(db: Database, tmp_path: Pat
         _stop_loop(loop, t)
 
 
-def test_classify_issue_rejects_priority_on_non_bug(db: Database, tmp_path: Path) -> None:
-    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(lambda r: httpx.Response(500)))
+def test_classify_issue_drops_priority_on_non_bug(db: Database, tmp_path: Path) -> None:
+    """Non-bug primaries silently drop a stray `priority` rather than rejecting.
+
+    Some models treat every tool-schema property as required and would loop
+    forever if a non-empty optional value triggered a hard validation error.
+    """
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=[{"name": "question"}, {"name": "triaged"}])
+
+    bindings, loop, t = _bindings(db, tmp_path, httpx.MockTransport(handler))
     try:
         tool = next(x for x in build(bindings) if x.name == "classify_issue")
-        with pytest.raises(RpcCommandError):
-            tool.execute(
-                {"primary": "question", "priority": "prio:p1", "rationale": "x"},
-                _ctx(),
-            )
+        result = tool.execute(
+            {"primary": "question", "priority": "prio:p3", "rationale": "how-to"},
+            _ctx(),
+        )
     finally:
         _stop_loop(loop, t)
+    assert "question" in result
+    # priority must NOT be applied as a label on non-bug classifications.
+    assert "prio:p3" not in (captured["body"].get("labels") or [])
+    row = db.get_issue(bindings.issue_key)
+    assert row is not None and row.classification == "question"
 
 
 def test_classify_issue_rejects_unknown_primary(db: Database, tmp_path: Path) -> None:

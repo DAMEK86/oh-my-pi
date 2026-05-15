@@ -46,12 +46,12 @@ description = "First triage step. Classify the issue, apply labels on GitHub, an
 
 [classify_issue.parameters]
 primary = "Exactly one primary classification."
-priority = "Required when primary=='bug'; one of prio:p0..p3."
-functional = "Zero or more functional labels."
-provider = "Only if explicitly provider-scoped; format provider:<name>."
-platform = "Only if platform materially affects reproduction."
+priority = "Required when primary=='bug'; one of prio:p0..p3. Omit entirely (do not include the field) for any other primary — the orchestrator silently drops a stray value rather than rejecting the call."
+functional = "Zero or more functional labels. Unknown values are dropped silently; omit the field when none apply."
+provider = "Only if explicitly provider-scoped; format provider:<name>. Omit entirely otherwise."
+platform = "Only if platform materially affects reproduction; one of platform:linux|macos|windows|wsl. Omit entirely otherwise."
 rationale = "One sentence explaining the classification."
-branch_slug = "Optional concise kebab-case slug describing the issue (1-50 chars, [a-z0-9-], no leading/trailing/double hyphen). Replaces the auto-generated slug in the working branch name. Provide this for `bug`/`documentation` classifications so the eventual PR carries a readable branch (e.g. `fix-windows-env-colon-vars`). Omit for non-PR workflows (`question`, `enhancement`, `proposal`, `invalid`, `duplicate`)."
+branch_slug = "Concise kebab-case slug (1-50 chars, [a-z0-9-], no leading/trailing/double hyphen) describing the issue. Replaces the auto-generated slug in the working branch name. Provide for `bug`/`documentation`. Omit entirely for non-PR workflows (`question`, `enhancement`, `proposal`, `invalid`, `duplicate`)."
 
 [classify_issue.next_steps]
 bug = "reproduce → diagnose → fix → PR"
