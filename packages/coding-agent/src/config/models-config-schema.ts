@@ -125,6 +125,7 @@ const ModelDefinitionSchema = z.object({
 			"anthropic-messages",
 			"google-generative-ai",
 			"google-vertex",
+			"bedrock-converse-stream",
 		])
 		.optional(),
 	baseUrl: z.string().min(1).optional(),
@@ -193,6 +194,7 @@ const ProviderConfigSchema = z.object({
 			"anthropic-messages",
 			"google-generative-ai",
 			"google-vertex",
+			"bedrock-converse-stream",
 		])
 		.optional(),
 	headers: z.record(z.string(), z.string()).optional(),

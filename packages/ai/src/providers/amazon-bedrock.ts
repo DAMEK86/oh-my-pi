@@ -42,6 +42,8 @@ export type BedrockThinkingDisplay = "summarized" | "omitted";
 export interface BedrockOptions extends StreamOptions {
 	region?: string;
 	profile?: string;
+	/** Override the Bedrock converse-stream endpoint (e.g. auth gateway or custom proxy). */
+	baseUrl?: string;
 	/** Amazon Bedrock API key sent as `Authorization: Bearer`, ahead of SigV4 credential resolution. */
 	bearerToken?: string;
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
@@ -67,10 +69,188 @@ export interface BedrockOptions extends StreamOptions {
 	thinkingDisplay?: BedrockThinkingDisplay;
 }
 const AUTHENTICATED_API_KEY_SENTINEL = "<authenticated>";
+// Mirrors `ModelRegistry.kNoAuth` in the coding-agent package. The `ai` package
+// cannot import from `coding-agent`, so the literal is duplicated here. A custom
+// `auth: "none"` provider surfaces this sentinel as `options.apiKey`; treating it
+// as a bearer token would send `Authorization: Bearer N/A` to a no-auth endpoint.
+const NO_AUTH_API_KEY_SENTINEL = "N/A";
+
+const BUNDLED_BEDROCK_PROVIDER = "amazon-bedrock";
+/** Catalog default baked into bundled `amazon-bedrock` entries in models.json. */
+const BUNDLED_BEDROCK_CATALOG_BASE_URL = "https://bedrock-runtime.us-east-1.amazonaws.com";
+
+/** Strip default ports from `URL.host` so SigV4 and AWS-host detection use hostname. */
+function normalizeBedrockHostname(host: string): string {
+	if (host.startsWith("[")) {
+		const end = host.indexOf("]");
+		return end === -1 ? host : host.slice(1, end);
+	}
+	const colon = host.lastIndexOf(":");
+	if (colon === -1) return host;
+	const port = host.slice(colon + 1);
+	if (port === "443" || port === "80") return host.slice(0, colon);
+	return host;
+}
+
+function isAwsHost(host: string): boolean {
+	const hostname = normalizeBedrockHostname(host);
+	return (
+		hostname === "amazonaws.com" ||
+		hostname.endsWith(".amazonaws.com") ||
+		hostname.endsWith(".amazonaws.com.cn")
+	);
+}
+
+function normalizeBedrockBaseUrl(baseUrl: string): string {
+	return baseUrl.replace(/\/$/, "");
+}
+
+/** Hostname (or host:port for non-default ports) for SigV4 signing from a base URL. */
+function bedrockHostFromBaseUrl(baseUrl: string): string {
+	const parsed = new URL(baseUrl);
+	if (!parsed.port || parsed.port === "443") return parsed.hostname;
+	return parsed.host;
+}
+
+/** Extract the AWS region from a Bedrock runtime host, when present. */
+function resolveBedrockSigningRegion(host: string, fallbackRegion: string): string {
+	const hostname = normalizeBedrockHostname(host);
+	if (!isAwsHost(hostname)) return fallbackRegion;
+
+	// bedrock-runtime[(-fips)].{region}.amazonaws.com[.cn]
+	const standard = hostname.match(/^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$/);
+	if (standard) return standard[1];
+
+	// VPC endpoints: *bedrock-runtime.{region}.vpce.amazonaws.com[.cn]
+	const vpc = hostname.match(/bedrock-runtime\.([a-z0-9-]+)\.vpce\.amazonaws\.com(?:\.cn)?$/);
+	if (vpc) return vpc[1];
+
+	return fallbackRegion;
+}
+
+
+/** True when `model.baseUrl` is the bundled catalog default, not a user override. */
+function isBundledCatalogBedrockBaseUrl(model: Model<"bedrock-converse-stream">): boolean {
+	if (model.provider !== BUNDLED_BEDROCK_PROVIDER || !model.baseUrl) return false;
+	return normalizeBedrockBaseUrl(model.baseUrl) === BUNDLED_BEDROCK_CATALOG_BASE_URL;
+}
+
+function resolveBedrockEndpoint(
+	model: Model<"bedrock-converse-stream">,
+	options: BedrockOptions,
+	region: string,
+	urlPath: string,
+): { host: string; url: string } {
+	// Precedence: per-request override > model.baseUrl (unless catalog default) > AWS regional host.
+	if (options.baseUrl) {
+		const baseUrl = normalizeBedrockBaseUrl(options.baseUrl);
+		return { host: bedrockHostFromBaseUrl(baseUrl), url: `${baseUrl}${urlPath}` };
+	}
+
+	if (model.baseUrl && !isBundledCatalogBedrockBaseUrl(model)) {
+		const baseUrl = normalizeBedrockBaseUrl(model.baseUrl);
+		return { host: bedrockHostFromBaseUrl(baseUrl), url: `${baseUrl}${urlPath}` };
+	}
+
+	const host = `bedrock-runtime.${region}.amazonaws.com`;
+	return { host, url: `https://${host}${urlPath}` };
+}
+
+type BedrockAuthMode = "bearer" | "preserved-headers" | "sigv4" | "none";
+
+function resolveBedrockAuthMode(
+	options: BedrockOptions,
+	model: Model<"bedrock-converse-stream">,
+	host: string,
+): BedrockAuthMode {
+	if (options.apiKey === NO_AUTH_API_KEY_SENTINEL) return "none";
+	if (resolveBearerToken(options)) return "bearer";
+
+	const headerKeys = new Set(
+		[...Object.keys(model.headers ?? {}), ...Object.keys(options.headers ?? {})].map(k => k.toLowerCase()),
+	);
+	if (headerKeys.has("authorization") || headerKeys.has("x-api-key")) return "preserved-headers";
+	if (isAwsHost(host)) return "sigv4";
+	return "none";
+}
+
+async function buildBedrockRequestHeaders(
+	authMode: BedrockAuthMode,
+	baseHeaders: Record<string, string>,
+	options: BedrockOptions,
+	host: string,
+	urlPath: string,
+	body: Uint8Array,
+	region: string,
+): Promise<Record<string, string>> {
+	switch (authMode) {
+		case "bearer": {
+			const bearerToken = resolveBearerToken(options);
+			return bearerToken ? { ...baseHeaders, Authorization: `Bearer ${bearerToken}` } : baseHeaders;
+		}
+		case "preserved-headers":
+			return baseHeaders;
+		case "sigv4": {
+			let credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+			if ($flag("AWS_BEDROCK_SKIP_AUTH")) {
+				credentials = { accessKeyId: "dummy-access-key", secretAccessKey: "dummy-secret-key" };
+			} else {
+				credentials = await resolveAwsCredentials({
+					profile: options.profile,
+					region,
+					signal: options.signal,
+				});
+			}
+			const signed = await signRequest({
+				method: "POST",
+				host,
+				path: urlPath,
+				body,
+				region,
+				service: "bedrock",
+				credentials,
+				headers: baseHeaders,
+			});
+			return { ...baseHeaders, ...signed };
+		}
+		case "none":
+			return baseHeaders;
+	}
+}
 
 function resolveBearerToken(options: BedrockOptions): string | undefined {
+	if (options.apiKey === NO_AUTH_API_KEY_SENTINEL) {
+		// No-auth custom providers pass the kNoAuth sentinel; do not fall back to env bearer.
+		return options.bearerToken;
+	}
 	const apiKey = options.apiKey === AUTHENTICATED_API_KEY_SENTINEL ? undefined : options.apiKey;
 	return options.bearerToken || apiKey || $env.AWS_BEARER_TOKEN_BEDROCK;
+}
+
+// Bedrock requires tool names to match `[a-zA-Z0-9_-]+`.
+function sanitizeToolName(name: string): string {
+	return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+// Maps sanitized wire names back to their original tool names. Only names that
+// actually change under sanitization are recorded, so the dispatcher (which
+// matches `Tool.name`) can resolve tools returned under their sanitized name.
+function buildToolNameReverseMap(tools: Tool[] | undefined): Map<string, string> {
+	const map = new Map<string, string>();
+	const seen = new Map<string, string>();
+	if (!tools) return map;
+	for (const tool of tools) {
+		const wire = sanitizeToolName(tool.name);
+		const existing = seen.get(wire);
+		if (existing !== undefined) {
+			throw new Error(
+				`Bedrock tool name collision after sanitization: "${existing}" and "${tool.name}" both map to "${wire}"`,
+			);
+		}
+		seen.set(wire, tool.name);
+		if (wire !== tool.name) map.set(wire, tool.name);
+	}
+	return map;
 }
 
 type Block = (TextContent | ThinkingContent | ToolCall) & {
@@ -200,8 +380,11 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 		const blocks = output.content as Block[];
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		const region = options.region || $env.AWS_REGION || $env.AWS_DEFAULT_REGION || "us-east-1";
+		let toolNameReverseMap = new Map<string, string>();
 
 		try {
+			const toolsEnabled = Boolean(context.tools?.length) && options.toolChoice !== "none";
+			toolNameReverseMap = toolsEnabled ? buildToolNameReverseMap(context.tools) : new Map();
 			const cacheRetention = resolveCacheRetention(options.cacheRetention);
 			const historyHasToolBlocks = context.messages.some(
 				m => m.role === "toolResult" || (m.role === "assistant" && m.content.some(b => b.type === "toolCall")),
@@ -229,9 +412,13 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 			};
 			options?.onPayload?.(commandInput);
 
-			const host = `bedrock-runtime.${region}.amazonaws.com`;
-			const url = `https://${host}/model/${encodeURIComponent(model.id)}/converse-stream`;
+			// Endpoint selection is independent of auth. Precedence: per-request
+			// `options.baseUrl` > `model.baseUrl` (unless the bundled catalog default)
+			// > AWS regional host. Registry overrides on `providers.amazon-bedrock.baseUrl`
+			// are honored; only the catalog's us-east-1 placeholder is ignored.
 			const urlPath = `/model/${encodeURIComponent(model.id)}/converse-stream`;
+			const { host, url } = resolveBedrockEndpoint(model, options, region, urlPath);
+			const signingRegion = resolveBedrockSigningRegion(host, region);
 			rawRequestDump = {
 				provider: model.provider,
 				api: output.api,
@@ -246,35 +433,23 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 			const baseHeaders: Record<string, string> = {
 				"content-type": "application/json",
 				accept: "application/vnd.amazon.eventstream",
+				...(model.headers ?? {}),
+				...(options.headers ?? {}),
 			};
 
-			const bearerToken = resolveBearerToken(options);
-			let requestHeaders: Record<string, string>;
-			if (bearerToken) {
-				requestHeaders = { ...baseHeaders, Authorization: `Bearer ${bearerToken}` };
-			} else {
-				let credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-				if ($flag("AWS_BEDROCK_SKIP_AUTH")) {
-					credentials = { accessKeyId: "dummy-access-key", secretAccessKey: "dummy-secret-key" };
-				} else {
-					credentials = await resolveAwsCredentials({
-						profile: options.profile,
-						region,
-						signal: options.signal,
-					});
-				}
-				const signed = await signRequest({
-					method: "POST",
-					host,
-					path: urlPath,
-					body,
-					region,
-					service: "bedrock",
-					credentials,
-					headers: baseHeaders,
-				});
-				requestHeaders = { ...baseHeaders, ...signed };
-			}
+			// Auth selection is host-based and independent of endpoint. Precedence:
+			// explicit bearer token > caller-supplied auth header (model or per-request,
+			// case-insensitive) > SigV4 for AWS hosts > no auth for custom proxies.
+			const authMode = resolveBedrockAuthMode(options, model, host);
+			const requestHeaders = await buildBedrockRequestHeaders(
+				authMode,
+				baseHeaders,
+				options,
+				host,
+				urlPath,
+				body,
+				signingRegion,
+			);
 
 			const response = await fetchWithRetry(url, {
 				method: "POST",
@@ -333,7 +508,13 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					}
 					case "contentBlockStart": {
 						if (!firstTokenTime) firstTokenTime = Date.now();
-						handleContentBlockStart(payload as ContentBlockStartEvent, blocks, output, stream);
+						handleContentBlockStart(
+							payload as ContentBlockStartEvent,
+							blocks,
+							output,
+							stream,
+							toolNameReverseMap,
+						);
 						break;
 					}
 					case "contentBlockDelta": {
@@ -426,15 +607,19 @@ function handleContentBlockStart(
 	blocks: Block[],
 	output: AssistantMessage,
 	stream: AssistantMessageEventStream,
+	toolNameReverseMap: Map<string, string>,
 ): void {
 	const index = event.contentBlockIndex;
 	const start = event.start;
 
 	if (start?.toolUse) {
+		// Bedrock echoes the sanitized wire name; restore the original so the
+		// agent dispatcher (which matches `Tool.name`) can resolve the tool.
+		const wireName = start.toolUse.name || "";
 		const block: Block = {
 			type: "toolCall",
 			id: normalizeToolCallId(start.toolUse.toolUseId || ""),
-			name: start.toolUse.name || "",
+			name: toolNameReverseMap.get(wireName) ?? wireName,
 			arguments: {},
 			partialJson: "",
 			index,
@@ -578,7 +763,7 @@ function supportsPromptCaching(model: Model<"bedrock-converse-stream">): boolean
  */
 function supportsThinkingSignature(model: Model<"bedrock-converse-stream">): boolean {
 	const id = model.id.toLowerCase();
-	return id.includes("anthropic.claude") || id.includes("anthropic/claude");
+	return id.includes("anthropic.claude") || id.includes("anthropic/claude") || id.startsWith("claude-");
 }
 
 function buildSystemPrompt(
@@ -657,7 +842,7 @@ function convertMessages(
 							contentBlocks.push({
 								toolUse: {
 									toolUseId: normalizeToolCallId(c.id),
-									name: c.name,
+									name: sanitizeToolName(c.name),
 									input: c.arguments,
 								},
 							});
@@ -757,7 +942,7 @@ function convertToolConfig(
 
 	const bedrockTools: WireToolSpec[] = tools.map(tool => ({
 		toolSpec: {
-			name: tool.name,
+			name: sanitizeToolName(tool.name),
 			description: tool.description || "",
 			inputSchema: { json: toolWireSchema(tool) },
 		},
@@ -780,7 +965,7 @@ function convertToolConfig(
 			break;
 		default:
 			if (toolChoice?.type === "tool") {
-				bedrockToolChoice = { tool: { name: toolChoice.name } };
+				bedrockToolChoice = { tool: { name: sanitizeToolName(toolChoice.name) } };
 			}
 	}
 

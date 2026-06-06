@@ -571,6 +571,9 @@
 ### Removed
 
 - Removed the `/copy last|code|all|cmd` subcommands; every copy target is now reachable by picking it in the `/copy` tree.
+### Added
+
+- Config schema: Added `"bedrock-converse-stream"` to `api` enum for ProviderConfigSchema and ModelDefinitionSchema
 
 ## [15.9.5] - 2026-06-05
 
