@@ -4,6 +4,9 @@ import type { Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 
+export * from "./aws-env";
+export * from "./aws-eventstream";
+
 export async function withEnv(
 	overrides: Record<string, string | undefined>,
 	fn: () => void | Promise<void>,
