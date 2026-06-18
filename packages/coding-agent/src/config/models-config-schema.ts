@@ -127,6 +127,7 @@ const ModelDefinitionSchema = z.object({
 			"google-generative-ai",
 			"google-gemini-cli",
 			"google-vertex",
+			"bedrock-converse-stream",
 		])
 		.optional(),
 	baseUrl: z.string().min(1).optional(),
@@ -198,6 +199,7 @@ const ProviderConfigSchema = z.object({
 			"google-generative-ai",
 			"google-gemini-cli",
 			"google-vertex",
+			"bedrock-converse-stream",
 		])
 		.optional(),
 	headers: z.record(z.string(), z.string()).optional(),

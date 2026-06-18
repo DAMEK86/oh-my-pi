@@ -1852,7 +1852,12 @@ export class ModelRegistry {
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.getApiKey(model.provider, sessionId, { baseUrl: model.baseUrl, modelId: model.id });
+		const key = await this.authStorage.getApiKey(model.provider, sessionId, {
+			baseUrl: model.baseUrl,
+			modelId: model.id,
+		});
+		if (key !== undefined) return key;
+		return undefined;
 	}
 
 	/**
@@ -1872,12 +1877,14 @@ export class ModelRegistry {
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.getApiKey(provider, sessionId, {
+		const key = await this.authStorage.getApiKey(provider, sessionId, {
 			baseUrl: options?.baseUrl,
 			modelId: options?.modelId,
 			forceRefresh: options?.forceRefresh,
 			signal: options?.signal,
 		});
+		if (key !== undefined) return key;
+		return undefined;
 	}
 
 	/**
@@ -1907,7 +1914,9 @@ export class ModelRegistry {
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.peekApiKey(provider);
+		const key = await this.authStorage.peekApiKey(provider);
+		if (key !== undefined) return key;
+		return undefined;
 	}
 
 	/**

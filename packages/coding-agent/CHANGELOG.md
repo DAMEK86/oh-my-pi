@@ -120,6 +120,7 @@
 - Fixed `omp plugin list --json` omitting locally linked plugins that exist only in `omp-plugins.lock.json` and `node_modules` symlinks. ([#2742](https://github.com/can1357/oh-my-pi/issues/2742))
 - Fixed task subagents to install their configured ordered model candidates as child-session retry fallback chains, so retryable provider failures can advance to the next subagent model instead of failing the worker ([#2750](https://github.com/can1357/oh-my-pi/issues/2750)).
 - Fixed empty reasonless aborted assistant turns to auto-retry without switching model fallback, so transient provider-side aborts after tool results do not end headless sessions ([#2685](https://github.com/can1357/oh-my-pi/issues/2685)).
+- Config schema: added `"bedrock-converse-stream"` to the `api` enum for `ProviderConfigSchema` and `ModelDefinitionSchema`, enabling custom Bedrock-compatible gateway providers in `models.yml`.
 
 ## [16.0.1] - 2026-06-15
 
@@ -229,6 +230,10 @@
 - Ctrl+C now works like Escape in selector components, so mashing Ctrl+C will eventually close the program ([#400](https://github.com/badlogic/pi-mono/pull/400) by [@mitsuhiko](https://github.com/mitsuhiko))
 - External editor (Ctrl-G) now shows full pasted content instead of `[paste #N ...]` placeholders ([#444](https://github.com/badlogic/pi-mono/pull/444) by [@aliou](https://github.com/aliou))
 - Subagent example README referenced incorrect filename `subagent.ts` instead of `index.ts` ([#427](https://github.com/badlogic/pi-mono/pull/427) by [@Whamp](https://github.com/Whamp))
+### Added
+
+- Config schema: added `"bedrock-converse-stream"` to the `api` enum for `ProviderConfigSchema` and `ModelDefinitionSchema`, enabling custom Bedrock-compatible providers in `models.yml`.
+- Custom `bedrock-converse-stream` providers no longer require an `apiKey` in `models.yml` unless `auth: "none"` — they authenticate via the normal AWS env/profile SigV4 flow, matching bundled `amazon-bedrock` behavior.
 
 ## [16.0.0] - 2026-06-15
 
