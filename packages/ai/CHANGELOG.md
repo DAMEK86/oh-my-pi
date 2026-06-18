@@ -64,6 +64,12 @@
 - Fixed Google Gemini tool calls with `toolChoice: "auto"` serializing an explicit `toolConfig` AUTO mode, which can cause Gemini-3 models to leak raw planning JSON instead of executing tools. ([#2776](https://github.com/can1357/oh-my-pi/issues/2776))
 - Fixed OpenAI-compatible Ollama completions that return empty `finish_reason:length` after filling `num_ctx` so they surface an actionable context-window error instead of an empty length stop. ([#2774](https://github.com/can1357/oh-my-pi/issues/2774))
 - Fixed Codex browser login issuing credentials for the `opencode` OAuth originator while OMP requests identify as `pi`, which could make the first authenticated Codex request return 401 ([#2696](https://github.com/can1357/oh-my-pi/issues/2696)).
+- Bedrock tool names are sanitized for the `[a-zA-Z0-9_-]+` wire format, with reverse mapping so tools like `foo.bar` still dispatch correctly — including the `toolChoice: "none"` path where tool specs are still sent because the history contains prior tool use.
+- Extended thinking-signature detection to bare `claude-*` model IDs on custom providers.
+- An explicit `bearerToken` is now honored for no-auth (`auth: "none"`) Bedrock providers instead of being shadowed by the no-auth path.
+- Caller-supplied Bedrock auth headers (`Authorization`/`X-Api-Key` on `model.headers`/`options.headers`) now outrank the `AWS_BEARER_TOKEN_BEDROCK` env fallback, so a custom gateway's configured header is no longer overwritten by the ambient env token.
+- Bedrock request headers are merged case-insensitively, so a differently-cased per-request header (e.g. `authorization`) replaces the model-level one instead of being sent as a comma-joined duplicate.
+- Stale Bedrock credentials are invalidated under the region actually used for signing (the host region for custom AWS endpoints), so a 401/403 retry re-resolves them.
 
 ## [16.0.1] - 2026-06-15
 
@@ -79,6 +85,18 @@
 - Fixed Cursor provider formatting tool errors with the same `[Tool Result]` prefix as successful results, causing Composer models to misinterpret error messages (e.g. "Pattern must not be empty") as directives over long conversations. Errors now use a `[Tool Error]` prefix so the model can distinguish failures from successes in the prompt history. ([#1853](https://github.com/can1357/oh-my-pi/pull/1853))
 - Fixed `validateToolArguments` silently accepting JSON-encoded array strings (e.g. `'["a","b"]'`) against `union(string, array<string>)` schemas — providers that double-serialize tool-call arguments (Z.AI / GLM) caused tools like `search` to receive the literal `["a","b"]` as a single path, producing zero matches (single element) or glob parse errors (multi-element). A new pre-validation pass parses JSON-array-shaped strings when the schema explicitly accepts both shapes. ([#1788](https://github.com/can1357/oh-my-pi/issues/1788))
 - Fixed Anthropic thinking summaries that arrive wrapped in literal `<thinking>` tags so advisor/raw transcript dumps do not render nested thinking tags ([#2695](https://github.com/can1357/oh-my-pi/issues/2695)).
+### Added
+
+- Custom `bedrock-converse-stream` providers via `models.yml` (`baseUrl`, optional `headers`, `auth: "none"`) for Bedrock-compatible gateways and proxies. AWS hosts use SigV4; non-AWS endpoints use caller headers or no auth.
+
+### Fixed
+
+- Bedrock tool names are sanitized for the `[a-zA-Z0-9_-]+` wire format, with reverse mapping so tools like `foo.bar` still dispatch correctly — including the `toolChoice: "none"` path where tool specs are still sent because the history contains prior tool use.
+- Extended thinking-signature detection to bare `claude-*` model IDs on custom providers.
+- An explicit `bearerToken` is now honored for no-auth (`auth: "none"`) Bedrock providers instead of being shadowed by the no-auth path.
+- Caller-supplied Bedrock auth headers (`Authorization`/`X-Api-Key` on `model.headers`/`options.headers`) now outrank the `AWS_BEARER_TOKEN_BEDROCK` env fallback, so a custom gateway's configured header is no longer overwritten by the ambient env token.
+- Bedrock request headers are merged case-insensitively, so a differently-cased per-request header (e.g. `authorization`) replaces the model-level one instead of being sent as a comma-joined duplicate.
+- Stale Bedrock credentials are invalidated under the region actually used for signing (the host region for custom AWS endpoints), so a 401/403 retry re-resolves them.
 
 ## [16.0.0] - 2026-06-15
 
